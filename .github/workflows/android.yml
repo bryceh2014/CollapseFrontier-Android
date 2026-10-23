@@ -1,5 +1,110 @@
 
-      - name: Export Android APK
+name: Build Collapse Frontier Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android components
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "cmdline-tools;latest" \
+            "cmake;3.10.2.4988404" \
+            "ndk;23.2.8568313"
+
+      - name: Install Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.3.0
+          use-dotnet: false
+
+      - name: Install Godot export templates
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates/4.3.stable
+          wget -q \
+            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz \
+            -O /tmp/templates.tpz
+          mkdir -p /tmp/godot-templates
+          unzip -q /tmp/templates.tpz -d /tmp/godot-templates
+          cp -r /tmp/godot-templates/templates/. \
+            ~/.local/share/godot/export_templates/4.3.stable/
+
+      - name: Configure Godot Android SDK paths
+        run: |
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.tres <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "/usr/local/lib/android/sdk"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+
+      - name: Create Android debug keystore
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storetype JKS \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Validate project files
+        run: |
+          test -f project.godot
+          test -f Main.tscn
+          test -f export_presets.cfg
+          test -f scripts/game.gd
+          test -f scripts/player.gd
+          test -f scripts/npc.gd
+          test -f scripts/pickup.gd
+          godot --headless --editor --path . --quit
+
+      - name: Check main scene
+        run: |
+          godot --headless --path . --quit-after 5
+
+      - name: Check Android export preset
+        continue-on-error: true
+        run: |
+          godot --headless --editor --path . --quit \
+            2>&1 | tee godot-preset-check.log
+          echo "Finished Android preset inspection."
+
+      - name: Export Android APK with diagnostics
+        id: android_export
+        shell: bash
         run: |
           set +e
           godot --headless --verbose --path . \
@@ -10,14 +115,28 @@
           if [ "$export_status" -ne 0 ]; then
             exit "$export_status"
           fi
-          test -s CollapseFrontier.apk
+          if [ ! -s CollapseFrontier.apk ]; then
+            echo "ERROR: Godot exited successfully but the APK is missing or empty."
+            exit 1
+          fi
 
-      - name: Upload export diagnostic log
-        if: always()
+      - name: Upload diagnostic logs
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: Android-Export-Diagnostics
-          path: android-export.log
+          path: |
+            android-export.log
+            godot-preset-check.log
           if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload APK
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CollapseFrontier-APK
+          path: CollapseFrontier.apk
+          if-no-files-found: error
           retention-days: 7
           
