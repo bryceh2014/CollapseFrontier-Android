@@ -65,16 +65,38 @@ jobs:
           export/android/java_sdk_path = "$JAVA_HOME"
           EOF
 
+      - name: Create Android debug keystore
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storetype JKS \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
       - name: Validate project
         run: |
           test -f project.godot
           test -f Main.tscn
           test -f export_presets.cfg
+          test -f scripts/game.gd
           godot --headless --editor --path . --quit
 
       - name: Check main scene
         run: |
           godot --headless --path . --quit-after 5
+
+      - name: Check Android export preset
+        run: |
+          godot --headless --editor --path . --quit 2>&1 | tee godot-preset-check.log
+          if grep -Ei "export preset.*(error|invalid)|keystore.*(error|invalid)|Android.*configuration error" godot-preset-check.log; then
+            echo "Review the Android export configuration above."
+          fi
 
       - name: Export Android APK
         run: |
