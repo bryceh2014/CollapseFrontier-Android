@@ -21,29 +21,23 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools, platforms;android-34, build-tools;34.0.0'
+
       - name: Install Godot
         uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.3.0
           use-dotnet: false
 
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android build tools
-        run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-
       - name: Install Godot export templates
         run: |
-          mkdir -p ~/.config/godot
-          godot --headless --editor --path . --quit || true
-          mkdir -p ~/.local/share/godot/export_templates
+          mkdir -p ~/.local/share/godot/export_templates/4.3.stable
           wget -q https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz -O /tmp/templates.tpz
           mkdir -p /tmp/godot-templates
           unzip -q /tmp/templates.tpz -d /tmp/godot-templates
-          mkdir -p ~/.local/share/godot/export_templates/4.3.stable
           cp -r /tmp/godot-templates/templates/* ~/.local/share/godot/export_templates/4.3.stable/
 
       - name: Validate project
@@ -53,7 +47,7 @@ jobs:
           test -f export_presets.cfg
           godot --headless --editor --path . --quit
 
-      - name: Export APK
+      - name: Export Android APK
         run: |
           godot --headless --path . --export-debug "Android" CollapseFrontier.apk
 
