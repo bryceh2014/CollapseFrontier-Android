@@ -7,6 +7,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,7 +29,9 @@ jobs:
 
       - name: Install Android build packages
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
       - name: Install Godot
         uses: chickensoft-games/setup-godot@v2
@@ -37,10 +42,13 @@ jobs:
       - name: Install Godot export templates
         run: |
           mkdir -p ~/.local/share/godot/export_templates/4.3.stable
-          wget -q https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz -O /tmp/templates.tpz
+          wget -q \
+            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz \
+            -O /tmp/templates.tpz
           mkdir -p /tmp/godot-templates
           unzip -q /tmp/templates.tpz -d /tmp/godot-templates
-          cp -r /tmp/godot-templates/templates/* ~/.local/share/godot/export_templates/4.3.stable/
+          cp -r /tmp/godot-templates/templates/. \
+            ~/.local/share/godot/export_templates/4.3.stable/
 
       - name: Validate project
         run: |
@@ -49,13 +57,22 @@ jobs:
           test -f export_presets.cfg
           godot --headless --editor --path . --quit
 
+      - name: Check main scene
+        run: |
+          godot --headless --path . \
+            --quit-after 5
+
       - name: Export Android APK
         run: |
-          godot --headless --path . --export-debug "Android" CollapseFrontier.apk
+          godot --headless --path . \
+            --export-debug "Android" CollapseFrontier.apk
+          test -s CollapseFrontier.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: CollapseFrontier-APK
           path: CollapseFrontier.apk
+          if-no-files-found: error
+          retention-days: 7
           
