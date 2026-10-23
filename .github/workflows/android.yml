@@ -19,7 +19,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Java
+      - name: Install Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -38,38 +38,31 @@ jobs:
             "cmake;3.10.2.4988404" \
             "ndk;23.2.8568313"
 
-      - name: Install Godot
+      - name: Install Godot 4.3
         uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.3.0
           use-dotnet: false
 
       - name: Install Godot export templates
+        shell: bash
         run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.3.stable
+          set -euo pipefail
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
           wget -q \
             https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz \
             -O /tmp/templates.tpz
           mkdir -p /tmp/godot-templates
           unzip -q /tmp/templates.tpz -d /tmp/godot-templates
           cp -r /tmp/godot-templates/templates/. \
-            ~/.local/share/godot/export_templates/4.3.stable/
-
-      - name: Configure Godot Android SDK paths
-        run: |
-          mkdir -p ~/.config/godot
-          cat > ~/.config/godot/editor_settings-4.tres <<EOF
-          [gd_resource type="EditorSettings" format=3]
-
-          [resource]
-          export/android/android_sdk_path = "/usr/local/lib/android/sdk"
-          export/android/java_sdk_path = "$JAVA_HOME"
-          EOF
+            "$HOME/.local/share/godot/export_templates/4.3.stable/"
 
       - name: Create Android debug keystore
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "$HOME/.android"
-          keytool -genkeypair -v \
+          keytool -genkeypair \
             -keystore "$HOME/.android/debug.keystore" \
             -storetype JKS \
             -storepass android \
@@ -80,8 +73,32 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Validate project files
+      - name: Configure Godot Android settings
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "/usr/local/lib/android/sdk"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+          echo "Checking Android build tools..."
+          test -x "$JAVA_HOME/bin/java"
+          test -x "/usr/local/lib/android/sdk/platform-tools/adb"
+          test -x "/usr/local/lib/android/sdk/build-tools/34.0.0/apksigner"
+          test -f "$HOME/.android/debug.keystore"
+
+      - name: Validate required project files
+        shell: bash
+        run: |
+          set -euo pipefail
           test -f project.godot
           test -f Main.tscn
           test -f export_presets.cfg
@@ -89,45 +106,61 @@ jobs:
           test -f scripts/player.gd
           test -f scripts/npc.gd
           test -f scripts/pickup.gd
-          godot --headless --editor --path . --quit
+          echo "Required project files are present."
 
-      - name: Check main scene
+      - name: Check Godot project and scripts
+        shell: bash
         run: |
-          godot --headless --path . --quit-after 5
+          set -o pipefail
+          godot --headless --editor --path . --quit \
+            2>&1 | tee godot-validation.log
 
       - name: Check Android export preset
-        continue-on-error: true
-        run: |
-          godot --headless --editor --path . --quit \
-            2>&1 | tee godot-preset-check.log
-          echo "Finished Android preset inspection."
-
-      - name: Export Android APK with diagnostics
-        id: android_export
         shell: bash
+        run: |
+          set +e
+          godot --headless --editor --path . --quit \
+            --verbose 2>&1 | tee godot-preset-check.log
+          status=${PIPESTATUS[0]}
+          echo "PRESET_CHECK_EXIT_CODE=$status"
+          exit "$status"
+
+      - name: Export Android APK
+        shell: bash
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           set +e
           godot --headless --verbose --path . \
             --export-debug "Android" CollapseFrontier.apk \
             2>&1 | tee android-export.log
-          export_status=${PIPESTATUS[0]}
-          echo "GODOT_EXPORT_EXIT_CODE=$export_status"
-          if [ "$export_status" -ne 0 ]; then
-            exit "$export_status"
+          status=${PIPESTATUS[0]}
+          echo "GODOT_EXPORT_EXIT_CODE=$status"
+
+          if [ "$status" -ne 0 ]; then
+            echo "APK export failed. See android-export.log."
+            exit "$status"
           fi
+
           if [ ! -s CollapseFrontier.apk ]; then
-            echo "ERROR: Godot exited successfully but the APK is missing or empty."
+            echo "ERROR: APK was not created or is empty."
             exit 1
           fi
+
+          echo "APK created successfully."
+          ls -lh CollapseFrontier.apk
 
       - name: Upload diagnostic logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: Android-Export-Diagnostics
+          name: CollapseFrontier-Build-Diagnostics
           path: |
-            android-export.log
+            godot-validation.log
             godot-preset-check.log
+            android-export.log
           if-no-files-found: warn
           retention-days: 7
 
