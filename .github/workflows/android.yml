@@ -15,6 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,7 +33,9 @@ jobs:
         uses: android-actions/setup-android@v4
 
       - name: Install Android components
+        shell: bash
         run: |
+          set -euo pipefail
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
@@ -44,24 +50,30 @@ jobs:
           version: 4.3.0
           use-dotnet: false
 
-      - name: Install Godot export templates
+      - name: Install Godot Android export templates
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
+
           wget -q \
             https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz \
-            -O /tmp/templates.tpz
+            -O /tmp/godot-templates.tpz
+
           mkdir -p /tmp/godot-templates
-          unzip -q /tmp/templates.tpz -d /tmp/godot-templates
+          unzip -q /tmp/godot-templates.tpz -d /tmp/godot-templates
+
           cp -r /tmp/godot-templates/templates/. \
             "$HOME/.local/share/godot/export_templates/4.3.stable/"
+
+          ls -lah "$HOME/.local/share/godot/export_templates/4.3.stable"
 
       - name: Create Android debug keystore
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.android"
+
           keytool -genkeypair \
             -keystore "$HOME/.android/debug.keystore" \
             -storetype JKS \
@@ -73,32 +85,33 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Configure Godot Android settings
+          keytool -list \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android
+
+      - name: Configure Android signing environment
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.config/godot"
-          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
-          [gd_resource type="EditorSettings" format=3]
+          {
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$HOME/.android/debug.keystore"
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey"
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android"
+          } >> "$GITHUB_ENV"
 
-          [resource]
-          export/android/android_sdk_path = "/usr/local/lib/android/sdk"
-          export/android/java_sdk_path = "$JAVA_HOME"
-          export/android/debug_keystore = "$HOME/.android/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          EOF
-
-          echo "Checking Android build tools..."
           test -x "$JAVA_HOME/bin/java"
-          test -x "/usr/local/lib/android/sdk/platform-tools/adb"
-          test -x "/usr/local/lib/android/sdk/build-tools/34.0.0/apksigner"
+          test -x "$ANDROID_SDK_ROOT/platform-tools/adb"
+          test -x "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner"
+          test -d "$ANDROID_SDK_ROOT/platforms/android-34"
           test -f "$HOME/.android/debug.keystore"
 
-      - name: Validate required project files
+          echo "Android build environment verified."
+
+      - name: Verify project files and settings
         shell: bash
         run: |
           set -euo pipefail
+
           test -f project.godot
           test -f Main.tscn
           test -f export_presets.cfg
@@ -106,53 +119,72 @@ jobs:
           test -f scripts/player.gd
           test -f scripts/npc.gd
           test -f scripts/pickup.gd
-          echo "Required project files are present."
 
-      - name: Check Godot project and scripts
+          grep -q '^textures/vram_compression/import_etc2_astc=true$' project.godot \
+            || { echo "Missing ETC2/ASTC texture import setting."; exit 1; }
+
+          grep -q '^name="Android"$' export_presets.cfg \
+            || { echo "Android export preset not found."; exit 1; }
+
+          grep -q '^platform="Android"$' export_presets.cfg \
+            || { echo "Export preset platform is not Android."; exit 1; }
+
+          echo "Project files and settings verified."
+
+      - name: Import and validate Godot project
         shell: bash
         run: |
           set -o pipefail
           godot --headless --editor --path . --quit \
             2>&1 | tee godot-validation.log
 
-      - name: Check Android export preset
+      - name: Inspect Godot export configuration
         shell: bash
         run: |
-          set +e
-          godot --headless --editor --path . --quit \
-            --verbose 2>&1 | tee godot-preset-check.log
-          status=${PIPESTATUS[0]}
-          echo "PRESET_CHECK_EXIT_CODE=$status"
-          exit "$status"
+          set -o pipefail
+          godot --headless --editor --path . --quit --verbose \
+            2>&1 | tee godot-preset-check.log
 
       - name: Export Android APK
         shell: bash
-        env:
-          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
-          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
-          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           set +e
           godot --headless --verbose --path . \
-            --export-debug "Android" CollapseFrontier.apk \
+            --export-debug "Android" "$GITHUB_WORKSPACE/CollapseFrontier.apk" \
             2>&1 | tee android-export.log
+
           status=${PIPESTATUS[0]}
           echo "GODOT_EXPORT_EXIT_CODE=$status"
 
           if [ "$status" -ne 0 ]; then
-            echo "APK export failed. See android-export.log."
+            echo "Android export failed. Relevant log lines:"
+            grep -Ein \
+              'error|failed|invalid|configuration|android|export|keystore|template|texture|etc2|astc' \
+              android-export.log | tail -n 100 || true
             exit "$status"
           fi
 
-          if [ ! -s CollapseFrontier.apk ]; then
+          if [ ! -s "$GITHUB_WORKSPACE/CollapseFrontier.apk" ]; then
             echo "ERROR: APK was not created or is empty."
             exit 1
           fi
 
-          echo "APK created successfully."
-          ls -lh CollapseFrontier.apk
+          ls -lh "$GITHUB_WORKSPACE/CollapseFrontier.apk"
 
-      - name: Upload diagnostic logs
+      - name: Verify APK archive and signature
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unzip -t "$GITHUB_WORKSPACE/CollapseFrontier.apk"
+
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" \
+            verify --verbose "$GITHUB_WORKSPACE/CollapseFrontier.apk"
+
+          echo "APK verification passed."
+
+      - name: Upload build diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -164,7 +196,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload APK
+      - name: Upload Android APK
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
